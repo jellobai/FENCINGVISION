@@ -4,3 +4,10 @@ plotly
 fastapi
 python-multipart
 uvicorn
+numpy
+pandas
+plotly
+fastapi
+python-multipart
+uvicorn
+opencv-python-headless
