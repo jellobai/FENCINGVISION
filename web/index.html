@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FencingVision</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero-card">
+        <p class="eyebrow">FencingVision</p>
+        <h1>Saber training assistant</h1>
+        <p class="hero-copy">
+          Upload one bout video, choose your side, and get a simple training-focused report with phrase review,
+          repeated patterns, and next-practice focus suggestions.
+        </p>
+      </section>
+
+      <section class="panel form-panel">
+        <form id="analyze-form" class="upload-form">
+          <label class="field">
+            <span>Upload saber video</span>
+            <input id="video" name="video" type="file" accept=".mp4,.mov,.avi,.mkv" required />
+          </label>
+
+          <label class="field">
+            <span>Which side are you?</span>
+            <select id="athlete_side" name="athlete_side">
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select>
+          </label>
+
+          <button id="submit-button" type="submit">Analyze video</button>
+        </form>
+
+        <div id="status" class="status hidden" aria-live="polite"></div>
+      </section>
+
+      <section id="results" class="results hidden">
+        <div class="panel">
+          <p class="eyebrow">Training Summary</p>
+          <p id="summary" class="summary"></p>
+        </div>
+
+        <div id="metrics" class="metrics-grid"></div>
+
+        <div class="panel">
+          <p class="eyebrow">Analysis Metadata</p>
+          <div id="analysis-meta" class="metrics-grid"></div>
+        </div>
+
+        <div class="panel">
+          <p class="eyebrow">Next Practice Focus</p>
+          <div id="practice-focus" class="focus-list"></div>
+        </div>
+
+        <div class="panel">
+          <p class="eyebrow">Phrase Review</p>
+          <div id="phrases" class="phrase-list"></div>
+        </div>
+
+        <div class="chart-grid">
+          <div class="panel">
+            <p class="eyebrow">Distance Over Time</p>
+            <div id="distance-chart" class="simple-chart"></div>
+          </div>
+          <div class="panel">
+            <p class="eyebrow">Strip Position</p>
+            <div id="strip-chart" class="simple-chart"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>
