@@ -177,6 +177,14 @@ def _draw_overlay(frame, row: pd.Series, athlete_side: str) -> None:
         label="LEFT",
         color=colors["athlete"] if athlete_side == "left" else colors["left"],
     )
+    _draw_saber_tip(
+        frame,
+        hand_x=float(row.get("left_wrist_x", row["left_center_x"])),
+        hand_y=float(row.get("left_wrist_y", row.get("left_center_y", frame.shape[0] * 0.55))),
+        tip_x=float(row.get("left_tip_x", row["left_center_x"])),
+        tip_y=float(row.get("left_tip_y", row.get("left_center_y", frame.shape[0] * 0.55))),
+        color=colors["athlete"] if athlete_side == "left" else colors["left"],
+    )
     _draw_fencer_box(
         frame,
         center_x=float(row["right_center_x"]),
@@ -184,6 +192,14 @@ def _draw_overlay(frame, row: pd.Series, athlete_side: str) -> None:
         width=float(row.get("right_width", 90.0)),
         height=float(row.get("right_height", frame.shape[0] * 0.34)),
         label="RIGHT",
+        color=colors["athlete"] if athlete_side == "right" else colors["right"],
+    )
+    _draw_saber_tip(
+        frame,
+        hand_x=float(row.get("right_wrist_x", row["right_center_x"])),
+        hand_y=float(row.get("right_wrist_y", row.get("right_center_y", frame.shape[0] * 0.55))),
+        tip_x=float(row.get("right_tip_x", row["right_center_x"])),
+        tip_y=float(row.get("right_tip_y", row.get("right_center_y", frame.shape[0] * 0.55))),
         color=colors["athlete"] if athlete_side == "right" else colors["right"],
     )
 
@@ -231,3 +247,23 @@ def _draw_fencer_box(
         color,
         2,
     )
+
+
+def _draw_saber_tip(
+    frame,
+    hand_x: float,
+    hand_y: float,
+    tip_x: float,
+    tip_y: float,
+    color: tuple[int, int, int],
+) -> None:
+    try:
+        import cv2  # type: ignore
+    except ImportError:  # pragma: no cover
+        return
+
+    start = (int(round(hand_x)), int(round(hand_y)))
+    end = (int(round(tip_x)), int(round(tip_y)))
+    cv2.line(frame, start, end, color, 2)
+    cv2.circle(frame, end, 6, (255, 244, 120), thickness=-1)
+    cv2.circle(frame, end, 9, color, 2)

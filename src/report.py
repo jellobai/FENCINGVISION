@@ -87,6 +87,7 @@ def build_report_payload(analysis: AnalysisResult) -> dict:
             "frame_count": analysis.metadata.frame_count,
             "resolution": f"{analysis.metadata.width}x{analysis.metadata.height}",
             "tracking_mode": "left-right continuity smoothing",
+            "saber_tip_mode": "pose-assisted wrist anchor with edge-line fallback",
         },
         "phrases": phrase_rows,
         "charts": {

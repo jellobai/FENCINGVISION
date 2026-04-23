@@ -94,6 +94,16 @@ uvicorn api:app --reload
 
 The results page will show which detector path was used under `Analysis Metadata`.
 
+## Pose-Assisted Saber Tips
+
+To improve saber-tip tracking, you can optionally install MediaPipe so the tracker can anchor the blade search from estimated wrist and elbow landmarks:
+
+```powershell
+pip install mediapipe
+```
+
+If MediaPipe is not installed, FencingVision will fall back to box-guided saber-tip estimation.
+
 ## Hosting
 
 The repository now includes a `Procfile` so it can be deployed to services like Railway as a simple web app.

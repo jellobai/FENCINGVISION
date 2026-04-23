@@ -14,7 +14,7 @@ from src.video_io import load_video_metadata
 def analyze_video(video_path: Path, athlete_side: str) -> AnalysisResult:
     metadata = load_video_metadata(video_path)
     detections, detection_source = detect_fencers(video_path=video_path, metadata=metadata)
-    tracks = track_fencers(detections)
+    tracks = track_fencers(detections, video_path=video_path, metadata=metadata)
     frame_features = compute_frame_features(tracks=tracks, metadata=metadata)
     frame_features, phrases = segment_phrases(frame_features)
     phrases = classify_phrase_events(frame_features=frame_features, phrases=phrases)
