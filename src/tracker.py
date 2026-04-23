@@ -249,6 +249,36 @@ def _fill_tip_gaps(tracked: pd.DataFrame) -> pd.DataFrame:
         "right_wrist_y",
     ]:
         filled[column] = filled[column].interpolate(limit_direction="both")
+
+    left_wrist_x_fallback = filled["left_center_x"] + filled["left_width"] * 0.25
+    left_wrist_y_fallback = filled.get("left_center_y", filled["left_center_x"] * 0 + 0) - filled.get(
+        "left_height",
+        filled["left_width"] * 1.3,
+    ) * 0.18
+    right_wrist_x_fallback = filled["right_center_x"] - filled["right_width"] * 0.25
+    right_wrist_y_fallback = filled.get("right_center_y", filled["right_center_x"] * 0 + 0) - filled.get(
+        "right_height",
+        filled["right_width"] * 1.3,
+    ) * 0.18
+    left_tip_x_fallback = filled["left_center_x"] + filled["left_width"] * 0.8
+    left_tip_y_fallback = filled.get("left_center_y", filled["left_center_x"] * 0 + 0) - filled.get(
+        "left_height",
+        filled["left_width"] * 1.3,
+    ) * 0.2
+    right_tip_x_fallback = filled["right_center_x"] - filled["right_width"] * 0.8
+    right_tip_y_fallback = filled.get("right_center_y", filled["right_center_x"] * 0 + 0) - filled.get(
+        "right_height",
+        filled["right_width"] * 1.3,
+    ) * 0.2
+
+    filled["left_wrist_x"] = filled["left_wrist_x"].fillna(left_wrist_x_fallback)
+    filled["left_wrist_y"] = filled["left_wrist_y"].fillna(left_wrist_y_fallback)
+    filled["right_wrist_x"] = filled["right_wrist_x"].fillna(right_wrist_x_fallback)
+    filled["right_wrist_y"] = filled["right_wrist_y"].fillna(right_wrist_y_fallback)
+    filled["left_tip_x"] = filled["left_tip_x"].fillna(left_tip_x_fallback)
+    filled["left_tip_y"] = filled["left_tip_y"].fillna(left_tip_y_fallback)
+    filled["right_tip_x"] = filled["right_tip_x"].fillna(right_tip_x_fallback)
+    filled["right_tip_y"] = filled["right_tip_y"].fillna(right_tip_y_fallback)
     return filled
 
 
