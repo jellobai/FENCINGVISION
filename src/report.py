@@ -9,7 +9,7 @@ from src.models import AnalysisResult, PracticeFocus, TrainingReport
 
 def build_training_report(analysis: AnalysisResult) -> TrainingReport:
     phrases = analysis.phrases
-    athlete = phrases["athlete_side"].iloc[0]
+    athlete = str(phrases["athlete_side"].iloc[0]) if len(phrases) else "selected"
 
     launch_rate = float(phrases["athlete_moved_first"].mean()) if len(phrases) else 0.0
     delayed_rate = float(phrases["delayed_commitment"].mean()) if len(phrases) else 0.0
@@ -94,3 +94,11 @@ def build_report_payload(analysis: AnalysisResult) -> dict:
             "strip": strip_series.to_dict(orient="records"),
         },
     }
+
+
+def attach_artifact_metadata(payload: dict, annotated_video_url: str | None) -> dict:
+    payload["artifacts"] = {
+        "annotated_video_url": annotated_video_url,
+        "annotated_video_available": bool(annotated_video_url),
+    }
+    return payload

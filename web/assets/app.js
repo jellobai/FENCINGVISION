@@ -9,6 +9,27 @@ const focusNode = document.getElementById("practice-focus");
 const phrasesNode = document.getElementById("phrases");
 const distanceChartNode = document.getElementById("distance-chart");
 const stripChartNode = document.getElementById("strip-chart");
+const annotatedVideoPanel = document.getElementById("annotated-video-panel");
+const annotatedVideoNode = document.getElementById("annotated-video");
+const annotatedVideoNoteNode = document.getElementById("annotated-video-note");
+const annotatedVideoLinkNode = document.getElementById("annotated-video-link");
+
+annotatedVideoNode.addEventListener("error", () => {
+  if (!annotatedVideoNode.currentSrc) {
+    return;
+  }
+  annotatedVideoNoteNode.textContent =
+    "This browser could not play the generated file inline. Use the direct link below to open or download it.";
+  annotatedVideoLinkNode.classList.remove("hidden");
+});
+
+annotatedVideoNode.addEventListener("loadeddata", () => {
+  if (!annotatedVideoNode.currentSrc) {
+    return;
+  }
+  annotatedVideoNoteNode.textContent =
+    "Overlay shows estimated fencer boxes, phrase number, distance, tempo, and pressure state.";
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -52,6 +73,12 @@ function renderResults(data) {
   phrasesNode.innerHTML = "";
   distanceChartNode.innerHTML = "";
   stripChartNode.innerHTML = "";
+  annotatedVideoNode.removeAttribute("src");
+  annotatedVideoNode.load();
+  annotatedVideoNoteNode.textContent = "";
+  annotatedVideoPanel.classList.add("hidden");
+  annotatedVideoLinkNode.removeAttribute("href");
+  annotatedVideoLinkNode.classList.add("hidden");
 
   const metricLabels = [
     ["phrases_detected", "Phrases detected"],
@@ -100,6 +127,17 @@ function renderResults(data) {
     `;
     phrasesNode.appendChild(card);
   });
+
+  if (data.artifacts?.annotated_video_available && data.artifacts.annotated_video_url) {
+    annotatedVideoNode.src = data.artifacts.annotated_video_url;
+    annotatedVideoNode.load();
+    annotatedVideoLinkNode.href = data.artifacts.annotated_video_url;
+    annotatedVideoLinkNode.classList.remove("hidden");
+    annotatedVideoNoteNode.textContent = "Loading annotated video...";
+    annotatedVideoPanel.classList.remove("hidden");
+  } else {
+    annotatedVideoNoteNode.textContent = "Annotated video is unavailable for this run.";
+  }
 
   renderSparkChart(
     distanceChartNode,

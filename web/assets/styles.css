@@ -188,6 +188,25 @@ button:disabled {
   gap: 8px;
 }
 
+.annotated-video {
+  width: 100%;
+  display: block;
+  border-radius: 18px;
+  background: #120f0b;
+  border: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+
+.video-link {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.video-link:hover {
+  text-decoration: underline;
+}
+
 .spark-row {
   display: grid;
   grid-template-columns: minmax(82px, 100px) 1fr;
