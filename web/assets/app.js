@@ -66,6 +66,7 @@ function renderResults(data) {
 
   [
     [data.analysis_meta.detection_source, "Detection source"],
+    [data.analysis_meta.tracking_mode, "Tracking mode"],
     [`${data.analysis_meta.duration_seconds}s`, "Duration"],
     [data.analysis_meta.fps, "FPS"],
     [data.analysis_meta.resolution, "Resolution"],

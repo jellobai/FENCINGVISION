@@ -86,6 +86,7 @@ def build_report_payload(analysis: AnalysisResult) -> dict:
             "duration_seconds": round(analysis.metadata.duration_seconds, 2),
             "frame_count": analysis.metadata.frame_count,
             "resolution": f"{analysis.metadata.width}x{analysis.metadata.height}",
+            "tracking_mode": "left-right continuity smoothing",
         },
         "phrases": phrase_rows,
         "charts": {

@@ -9,7 +9,7 @@ from src.models import VideoMetadata
 
 
 def detect_fencers(video_path: Path, metadata: VideoMetadata) -> tuple[pd.DataFrame, str]:
-    """Estimate left/right fencer strip positions from video motion when possible."""
+    """Detect left/right fencers from foreground motion, falling back to synthetic scaffolding."""
     try:
         import cv2  # type: ignore
     except ImportError:
@@ -19,112 +19,213 @@ def detect_fencers(video_path: Path, metadata: VideoMetadata) -> tuple[pd.DataFr
     if not capture.isOpened():
         return _synthetic_detections(metadata), "synthetic fallback"
 
-    sample_stride = max(int(round(metadata.fps / 6.0)), 1)
-    sampled_rows: list[dict[str, float]] = []
-    previous_band: np.ndarray | None = None
+    subtractor = cv2.createBackgroundSubtractorMOG2(history=240, varThreshold=36, detectShadows=False)
+    detections: list[dict[str, float]] = []
+    previous_left_box: tuple[int, int, int, int] | None = None
+    previous_right_box: tuple[int, int, int, int] | None = None
 
-    while True:
-        frame_id = int(capture.get(cv2.CAP_PROP_POS_FRAMES))
+    for frame_index in range(metadata.frame_count):
         ok, frame = capture.read()
         if not ok:
             break
-        if frame_id % sample_stride != 0:
+
+        strip_frame, x_offset, y_offset = _extract_strip_roi(frame)
+        if strip_frame.size == 0:
             continue
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        band = _extract_strip_band(gray)
-        if band.size == 0:
-            previous_band = None
+        mask = subtractor.apply(strip_frame)
+        person_boxes = _find_candidate_boxes(mask=mask, frame_shape=strip_frame.shape)
+        if not person_boxes:
             continue
 
-        if previous_band is None:
-            previous_band = band
+        left_box, right_box = _assign_fencers(
+            boxes=person_boxes,
+            frame_width=strip_frame.shape[1],
+            previous_left_box=previous_left_box,
+            previous_right_box=previous_right_box,
+        )
+        if left_box is None or right_box is None:
             continue
 
-        motion_mask = _build_motion_mask(current=band, previous=previous_band)
-        previous_band = band
+        previous_left_box = left_box
+        previous_right_box = right_box
 
-        left_center, left_width = _lane_estimate(motion_mask, 0.0, 0.5)
-        right_center, right_width = _lane_estimate(motion_mask, 0.5, 1.0)
-        if left_center is None or right_center is None:
-            continue
-
-        sampled_rows.append(
+        detections.append(
             {
-                "frame": float(frame_id),
-                "left_center_x": float(left_center),
-                "right_center_x": float(right_center),
-                "left_width": float(left_width),
-                "right_width": float(right_width),
+                "frame": float(frame_index),
+                "time_seconds": frame_index / metadata.fps,
+                "left_center_x": float(left_box[0] + left_box[2] / 2 + x_offset),
+                "right_center_x": float(right_box[0] + right_box[2] / 2 + x_offset),
+                "left_width": float(left_box[2]),
+                "right_width": float(right_box[2]),
+                "left_center_y": float(left_box[1] + left_box[3] / 2 + y_offset),
+                "right_center_y": float(right_box[1] + right_box[3] / 2 + y_offset),
+                "left_height": float(left_box[3]),
+                "right_height": float(right_box[3]),
             }
         )
 
     capture.release()
 
-    sampled = pd.DataFrame(sampled_rows)
-    if len(sampled) < 4:
+    sampled = pd.DataFrame(detections)
+    if len(sampled) < max(8, int(metadata.fps // 2)):
         return _synthetic_detections(metadata), "synthetic fallback"
 
-    detections = _interpolate_detections(sampled=sampled, metadata=metadata)
-    if detections is None:
+    interpolated = _interpolate_detections(sampled=sampled, metadata=metadata)
+    if interpolated is None:
         return _synthetic_detections(metadata), "synthetic fallback"
-    return detections, "motion-derived baseline"
+
+    return interpolated, "foreground contour detector"
 
 
-def _extract_strip_band(gray_frame: np.ndarray) -> np.ndarray:
-    height = gray_frame.shape[0]
-    top = int(height * 0.22)
-    bottom = int(height * 0.82)
-    band = gray_frame[top:bottom, :]
-    return band
+def _extract_strip_roi(frame: np.ndarray) -> tuple[np.ndarray, int, int]:
+    height, width = frame.shape[:2]
+    top = int(height * 0.16)
+    bottom = int(height * 0.9)
+    left = int(width * 0.04)
+    right = int(width * 0.96)
+    return frame[top:bottom, left:right], left, top
 
 
-def _build_motion_mask(current: np.ndarray, previous: np.ndarray) -> np.ndarray:
-    current_blur = _blur_frame(current)
-    previous_blur = _blur_frame(previous)
-    delta = np.abs(current_blur.astype(np.int16) - previous_blur.astype(np.int16)).astype(np.uint8)
-
-    threshold = max(18, int(delta.mean() + delta.std()))
-    mask = (delta > threshold).astype(np.uint8)
-    return mask
-
-
-def _blur_frame(frame: np.ndarray) -> np.ndarray:
+def _find_candidate_boxes(mask: np.ndarray, frame_shape: tuple[int, ...]) -> list[tuple[int, int, int, int]]:
     try:
         import cv2  # type: ignore
     except ImportError:  # pragma: no cover
-        return frame
-    return cv2.GaussianBlur(frame, (9, 9), 0)
+        return []
+
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    refined = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    refined = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    frame_height, frame_width = frame_shape[:2]
+    min_area = max(220, int(frame_height * frame_width * 0.003))
+    boxes: list[tuple[int, int, int, int]] = []
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area:
+            continue
+
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = h / max(w, 1)
+        if h < frame_height * 0.14 or w < frame_width * 0.03:
+            continue
+        if aspect_ratio < 0.9:
+            continue
+        boxes.append((x, y, w, h))
+
+    boxes.sort(key=lambda box: box[2] * box[3], reverse=True)
+    return boxes[:6]
 
 
-def _lane_estimate(mask: np.ndarray, start_fraction: float, end_fraction: float) -> tuple[float | None, float]:
-    width = mask.shape[1]
-    start = int(width * start_fraction)
-    end = int(width * end_fraction)
-    if end <= start:
-        return None, 0.0
+def _assign_fencers(
+    boxes: list[tuple[int, int, int, int]],
+    frame_width: int,
+    previous_left_box: tuple[int, int, int, int] | None,
+    previous_right_box: tuple[int, int, int, int] | None,
+) -> tuple[tuple[int, int, int, int] | None, tuple[int, int, int, int] | None]:
+    if len(boxes) == 1:
+        single = boxes[0]
+        center_x = single[0] + single[2] / 2
+        if center_x < frame_width / 2:
+            return single, previous_right_box
+        return previous_left_box, single
 
-    lane = mask[:, start:end]
-    column_energy = lane.sum(axis=0).astype(float)
-    if not np.any(column_energy):
-        return None, 0.0
+    best_pair: tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None = None
+    best_score: float | None = None
 
-    column_energy = _smooth_series(column_energy, window=21)
-    threshold = max(column_energy.mean() * 1.1, np.percentile(column_energy, 70))
-    active = column_energy >= threshold
-    if not np.any(active):
-        active = column_energy >= column_energy.max() * 0.65
-    if not np.any(active):
-        return None, 0.0
+    for index, left_candidate in enumerate(boxes):
+        for right_candidate in boxes[index + 1 :]:
+            ordered_left, ordered_right = sorted(
+                [left_candidate, right_candidate],
+                key=lambda box: box[0] + box[2] / 2,
+            )
+            score = _pair_score(
+                left_box=ordered_left,
+                right_box=ordered_right,
+                frame_width=frame_width,
+                previous_left_box=previous_left_box,
+                previous_right_box=previous_right_box,
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best_pair = (ordered_left, ordered_right)
 
-    active_positions = np.flatnonzero(active)
-    weights = column_energy[active]
-    center = start + float(np.average(active_positions, weights=weights))
-    spread = float(active_positions[-1] - active_positions[0] + 1)
-    return center, max(spread, 48.0)
+    if best_pair is None:
+        return None, None
+    return best_pair
 
 
-def _smooth_series(values: np.ndarray, window: int) -> np.ndarray:
+def _pair_score(
+    left_box: tuple[int, int, int, int],
+    right_box: tuple[int, int, int, int],
+    frame_width: int,
+    previous_left_box: tuple[int, int, int, int] | None,
+    previous_right_box: tuple[int, int, int, int] | None,
+) -> float:
+    left_center = left_box[0] + left_box[2] / 2
+    right_center = right_box[0] + right_box[2] / 2
+    if left_center >= right_center:
+        return -1e9
+
+    separation = right_center - left_center
+    lane_bias = (frame_width - abs(left_center - frame_width * 0.25) - abs(right_center - frame_width * 0.75)) / frame_width
+    area_score = (left_box[2] * left_box[3] + right_box[2] * right_box[3]) / max(frame_width, 1)
+    score = separation * 0.02 + lane_bias * 200 + area_score
+
+    if previous_left_box is not None:
+        score -= abs(left_center - (previous_left_box[0] + previous_left_box[2] / 2)) * 0.8
+    if previous_right_box is not None:
+        score -= abs(right_center - (previous_right_box[0] + previous_right_box[2] / 2)) * 0.8
+
+    return score
+
+
+def _interpolate_detections(sampled: pd.DataFrame, metadata: VideoMetadata) -> pd.DataFrame | None:
+    frame_index = np.arange(metadata.frame_count)
+    if len(frame_index) < 2:
+        return None
+
+    sampled = sampled.sort_values("frame").drop_duplicates("frame")
+    sampled_frames = sampled["frame"].to_numpy(dtype=float)
+    if len(sampled_frames) < 2:
+        return None
+
+    interpolated = pd.DataFrame(
+        {
+            "frame": frame_index,
+            "time_seconds": frame_index / metadata.fps,
+        }
+    )
+
+    for column in [
+        "left_center_x",
+        "right_center_x",
+        "left_width",
+        "right_width",
+        "left_center_y",
+        "right_center_y",
+        "left_height",
+        "right_height",
+    ]:
+        interpolated[column] = np.interp(frame_index, sampled_frames, sampled[column].to_numpy(dtype=float))
+
+    interpolated["left_center_x"] = _smooth_track(interpolated["left_center_x"].to_numpy())
+    interpolated["right_center_x"] = _smooth_track(interpolated["right_center_x"].to_numpy())
+    interpolated["left_center_y"] = _smooth_track(interpolated["left_center_y"].to_numpy())
+    interpolated["right_center_y"] = _smooth_track(interpolated["right_center_y"].to_numpy())
+
+    minimum_gap = metadata.width * 0.05
+    interpolated["right_center_x"] = np.maximum(
+        interpolated["right_center_x"].to_numpy(),
+        interpolated["left_center_x"].to_numpy() + minimum_gap,
+    )
+
+    return interpolated
+
+
+def _smooth_track(values: np.ndarray, window: int = 11) -> np.ndarray:
     if len(values) <= 2:
         return values
     effective_window = min(window, len(values))
@@ -134,45 +235,12 @@ def _smooth_series(values: np.ndarray, window: int) -> np.ndarray:
     return np.convolve(values, kernel, mode="same")
 
 
-def _interpolate_detections(sampled: pd.DataFrame, metadata: VideoMetadata) -> pd.DataFrame | None:
-    frame_index = np.arange(metadata.frame_count)
-    if len(frame_index) == 0:
-        return None
-
-    sampled = sampled.sort_values("frame").drop_duplicates("frame")
-    sampled_frames = sampled["frame"].to_numpy(dtype=float)
-    if len(sampled_frames) < 2:
-        return None
-
-    left_center = np.interp(frame_index, sampled_frames, sampled["left_center_x"])
-    right_center = np.interp(frame_index, sampled_frames, sampled["right_center_x"])
-    left_width = np.interp(frame_index, sampled_frames, sampled["left_width"])
-    right_width = np.interp(frame_index, sampled_frames, sampled["right_width"])
-
-    min_gap = metadata.width * 0.08
-    right_center = np.maximum(right_center, left_center + min_gap)
-
-    detections = pd.DataFrame(
-        {
-            "frame": frame_index,
-            "time_seconds": frame_index / metadata.fps,
-            "left_center_x": left_center,
-            "right_center_x": right_center,
-            "left_width": left_width,
-            "right_width": right_width,
-        }
-    )
-    return detections
-
-
 def _synthetic_detections(metadata: VideoMetadata) -> pd.DataFrame:
-    """Deterministic placeholder detections used when video-derived tracking is unavailable."""
     frame_index = np.arange(metadata.frame_count)
     time_seconds = frame_index / metadata.fps
 
     left_center = metadata.width * 0.25 + 70 * np.sin(time_seconds * 1.2)
     right_center = metadata.width * 0.75 + 70 * np.sin(time_seconds * 1.1 + 1.6)
-
     burst_pattern = np.maximum(0.0, np.sin(time_seconds * 0.8)) ** 3
     left_center = left_center + 120 * burst_pattern
     right_center = right_center - 120 * burst_pattern
@@ -185,5 +253,9 @@ def _synthetic_detections(metadata: VideoMetadata) -> pd.DataFrame:
             "right_center_x": right_center,
             "left_width": 90.0,
             "right_width": 90.0,
+            "left_center_y": metadata.height * 0.55,
+            "right_center_y": metadata.height * 0.55,
+            "left_height": metadata.height * 0.34,
+            "right_height": metadata.height * 0.34,
         }
     )
