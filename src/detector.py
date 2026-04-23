@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -9,15 +10,123 @@ from src.models import VideoMetadata
 
 
 def detect_fencers(video_path: Path, metadata: VideoMetadata) -> tuple[pd.DataFrame, str]:
-    """Detect left/right fencers from foreground motion, falling back to synthetic scaffolding."""
+    """Try a real detector first, then degrade gracefully to heuristic detection."""
+    yolo_detections = _detect_with_yolo(video_path=video_path, metadata=metadata)
+    if yolo_detections is not None:
+        return yolo_detections, _yolo_source_label()
+
+    contour_detections = _detect_with_contours(video_path=video_path, metadata=metadata)
+    if contour_detections is not None:
+        return contour_detections, "foreground contour fallback"
+
+    return _synthetic_detections(metadata), "synthetic fallback"
+
+
+def _detect_with_yolo(video_path: Path, metadata: VideoMetadata) -> pd.DataFrame | None:
     try:
         import cv2  # type: ignore
+        from ultralytics import YOLO  # type: ignore
     except ImportError:
-        return _synthetic_detections(metadata), "synthetic fallback"
+        return None
+
+    model_name = os.environ.get("FENCINGVISION_YOLO_MODEL", "yolo11n.pt")
+    try:
+        model = YOLO(model_name)
+    except Exception:
+        return None
 
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
-        return _synthetic_detections(metadata), "synthetic fallback"
+        return None
+
+    detections: list[dict[str, float]] = []
+    previous_left_box: tuple[int, int, int, int] | None = None
+    previous_right_box: tuple[int, int, int, int] | None = None
+    sample_stride = max(int(round(metadata.fps / 12.0)), 1)
+
+    for frame_index in range(metadata.frame_count):
+        ok, frame = capture.read()
+        if not ok:
+            break
+        if frame_index % sample_stride != 0:
+            continue
+
+        strip_frame, x_offset, y_offset = _extract_strip_roi(frame)
+        if strip_frame.size == 0:
+            continue
+
+        boxes = _run_yolo_person_detector(model=model, frame=strip_frame)
+        if not boxes:
+            continue
+
+        left_box, right_box = _assign_fencers(
+            boxes=boxes,
+            frame_width=strip_frame.shape[1],
+            previous_left_box=previous_left_box,
+            previous_right_box=previous_right_box,
+        )
+        if left_box is None or right_box is None:
+            continue
+
+        previous_left_box = left_box
+        previous_right_box = right_box
+        detections.append(
+            _build_detection_row(
+                frame_index=frame_index,
+                fps=metadata.fps,
+                left_box=left_box,
+                right_box=right_box,
+                x_offset=x_offset,
+                y_offset=y_offset,
+            )
+        )
+
+    capture.release()
+    return _finalize_sampled_detections(detections=detections, metadata=metadata)
+
+
+def _run_yolo_person_detector(model, frame: np.ndarray) -> list[tuple[int, int, int, int]]:
+    try:
+        results = model.predict(
+            source=frame,
+            verbose=False,
+            classes=[0],
+            conf=float(os.environ.get("FENCINGVISION_YOLO_CONF", "0.25")),
+        )
+    except Exception:
+        return []
+
+    if not results:
+        return []
+
+    result = results[0]
+    boxes_data = getattr(result, "boxes", None)
+    if boxes_data is None or boxes_data.xyxy is None:
+        return []
+
+    xyxy = boxes_data.xyxy.cpu().numpy()
+    confidence = boxes_data.conf.cpu().numpy() if boxes_data.conf is not None else np.ones(len(xyxy))
+
+    boxes: list[tuple[int, int, int, int]] = []
+    for raw_box, score in zip(xyxy, confidence):
+        if float(score) < 0.2:
+            continue
+        x1, y1, x2, y2 = raw_box.tolist()
+        width = max(int(round(x2 - x1)), 1)
+        height = max(int(round(y2 - y1)), 1)
+        boxes.append((int(round(x1)), int(round(y1)), width, height))
+    return boxes
+
+
+def _detect_with_contours(video_path: Path, metadata: VideoMetadata) -> pd.DataFrame | None:
+    try:
+        import cv2  # type: ignore
+    except ImportError:
+        return None
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return None
 
     subtractor = cv2.createBackgroundSubtractorMOG2(history=240, varThreshold=36, detectShadows=False)
     detections: list[dict[str, float]] = []
@@ -49,33 +158,56 @@ def detect_fencers(video_path: Path, metadata: VideoMetadata) -> tuple[pd.DataFr
 
         previous_left_box = left_box
         previous_right_box = right_box
-
         detections.append(
-            {
-                "frame": float(frame_index),
-                "time_seconds": frame_index / metadata.fps,
-                "left_center_x": float(left_box[0] + left_box[2] / 2 + x_offset),
-                "right_center_x": float(right_box[0] + right_box[2] / 2 + x_offset),
-                "left_width": float(left_box[2]),
-                "right_width": float(right_box[2]),
-                "left_center_y": float(left_box[1] + left_box[3] / 2 + y_offset),
-                "right_center_y": float(right_box[1] + right_box[3] / 2 + y_offset),
-                "left_height": float(left_box[3]),
-                "right_height": float(right_box[3]),
-            }
+            _build_detection_row(
+                frame_index=frame_index,
+                fps=metadata.fps,
+                left_box=left_box,
+                right_box=right_box,
+                x_offset=x_offset,
+                y_offset=y_offset,
+            )
         )
 
     capture.release()
+    return _finalize_sampled_detections(detections=detections, metadata=metadata)
 
+
+def _build_detection_row(
+    frame_index: int,
+    fps: float,
+    left_box: tuple[int, int, int, int],
+    right_box: tuple[int, int, int, int],
+    x_offset: int,
+    y_offset: int,
+) -> dict[str, float]:
+    return {
+        "frame": float(frame_index),
+        "time_seconds": frame_index / fps,
+        "left_center_x": float(left_box[0] + left_box[2] / 2 + x_offset),
+        "right_center_x": float(right_box[0] + right_box[2] / 2 + x_offset),
+        "left_width": float(left_box[2]),
+        "right_width": float(right_box[2]),
+        "left_center_y": float(left_box[1] + left_box[3] / 2 + y_offset),
+        "right_center_y": float(right_box[1] + right_box[3] / 2 + y_offset),
+        "left_height": float(left_box[3]),
+        "right_height": float(right_box[3]),
+    }
+
+
+def _finalize_sampled_detections(
+    detections: list[dict[str, float]],
+    metadata: VideoMetadata,
+) -> pd.DataFrame | None:
     sampled = pd.DataFrame(detections)
     if len(sampled) < max(8, int(metadata.fps // 2)):
-        return _synthetic_detections(metadata), "synthetic fallback"
+        return None
+    return _interpolate_detections(sampled=sampled, metadata=metadata)
 
-    interpolated = _interpolate_detections(sampled=sampled, metadata=metadata)
-    if interpolated is None:
-        return _synthetic_detections(metadata), "synthetic fallback"
 
-    return interpolated, "foreground contour detector"
+def _yolo_source_label() -> str:
+    model_name = os.environ.get("FENCINGVISION_YOLO_MODEL", "yolo11n.pt")
+    return f"yolo detector ({Path(model_name).name})"
 
 
 def _extract_strip_roi(frame: np.ndarray) -> tuple[np.ndarray, int, int]:
@@ -170,7 +302,11 @@ def _pair_score(
         return -1e9
 
     separation = right_center - left_center
-    lane_bias = (frame_width - abs(left_center - frame_width * 0.25) - abs(right_center - frame_width * 0.75)) / frame_width
+    lane_bias = (
+        frame_width
+        - abs(left_center - frame_width * 0.25)
+        - abs(right_center - frame_width * 0.75)
+    ) / frame_width
     area_score = (left_box[2] * left_box[3] + right_box[2] * right_box[3]) / max(frame_width, 1)
     score = separation * 0.02 + lane_bias * 200 + area_score
 
@@ -209,7 +345,11 @@ def _interpolate_detections(sampled: pd.DataFrame, metadata: VideoMetadata) -> p
         "left_height",
         "right_height",
     ]:
-        interpolated[column] = np.interp(frame_index, sampled_frames, sampled[column].to_numpy(dtype=float))
+        interpolated[column] = np.interp(
+            frame_index,
+            sampled_frames,
+            sampled[column].to_numpy(dtype=float),
+        )
 
     interpolated["left_center_x"] = _smooth_track(interpolated["left_center_x"].to_numpy())
     interpolated["right_center_x"] = _smooth_track(interpolated["right_center_x"].to_numpy())
@@ -221,7 +361,6 @@ def _interpolate_detections(sampled: pd.DataFrame, metadata: VideoMetadata) -> p
         interpolated["right_center_x"].to_numpy(),
         interpolated["left_center_x"].to_numpy() + minimum_gap,
     )
-
     return interpolated
 
 

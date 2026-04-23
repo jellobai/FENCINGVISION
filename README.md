@@ -53,7 +53,11 @@ The current prototype includes:
 
 ## Run Notes
 
-The current build uses synthetic placeholder detections so the report pipeline can be developed before integrating a full CV detector.
+The current build now supports a layered detection strategy:
+
+- a real YOLO person detector if `ultralytics` is installed
+- a foreground-contour fallback if YOLO is unavailable
+- a synthetic fallback only as a last resort
 
 To run the app locally once dependencies are installed:
 
@@ -66,6 +70,29 @@ Then open:
 ```text
 http://127.0.0.1:8000
 ```
+
+## Real Detector Setup
+
+To enable the real detector path locally, install Ultralytics in your active environment:
+
+```powershell
+pip install ultralytics
+```
+
+Then run the app normally:
+
+```powershell
+uvicorn api:app --reload
+```
+
+By default, FencingVision will try to use the YOLO model `yolo11n.pt`. You can override that with an environment variable:
+
+```powershell
+$env:FENCINGVISION_YOLO_MODEL="yolo11s.pt"
+uvicorn api:app --reload
+```
+
+The results page will show which detector path was used under `Analysis Metadata`.
 
 ## Hosting
 
